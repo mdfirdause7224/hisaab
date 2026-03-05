@@ -25,7 +25,7 @@ export function NavBar() {
               to={to}
               className={cn(
                 'relative flex flex-col items-center gap-0.5 px-3 py-2 text-xs transition-colors',
-                active ? 'text-primary' : 'text-text-muted hover:text-text'
+                active ? 'text-primary' : 'text-text'
               )}
             >
               {active && (

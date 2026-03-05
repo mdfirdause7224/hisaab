@@ -62,11 +62,41 @@ export default function Dashboard() {
         if (isThisMonth(d)) monthSpend += tx.amount;
       }
     });
+    
+    // Calculate only NEW loans (affect balance) vs OLD loans (historical only)
+    const totalNewLoans = loans.reduce((s, l) => {
+      return s + (l.loanType === 'new' ? l.principal : 0);
+    }, 0);
+    
+    const totalOldLoans = loans.reduce((s, l) => {
+      return s + (l.loanType === 'old' ? l.principal : 0);
+    }, 0);
+    
+    const totalLoanPaymentsMade = loans.reduce((s, l) => {
+      const paid = (l.payments || []).reduce((ps, p) => ps + p.amount, 0);
+      return s + paid;
+    }, 0);
+    
     const totalLoanOwed = loans.reduce((s, l) => {
       const paid = (l.payments || []).reduce((ps, p) => ps + p.amount, 0);
-      return s + (l.direction === 'lent' ? 0 : (l.principal - paid));
+      return s + (l.loanType === 'new' ? (l.principal - paid) : 0);
     }, 0);
-    return { balance: totalIncome - totalExpense - totalLoanOwed, todaySpend, monthSpend, totalLoanOwed, totalIncome, totalExpense };
+    
+    // Available balance = Income + New Loans - Expenses - Loan Payments Made
+    // Old loans don't affect balance (historical only)
+    const availableBalance = totalIncome + totalNewLoans - totalExpense - totalLoanPaymentsMade;
+    
+    return { 
+      balance: availableBalance, 
+      todaySpend, 
+      monthSpend, 
+      totalLoanOwed, 
+      totalIncome, 
+      totalExpense, 
+      totalNewLoans,
+      totalOldLoans,
+      totalLoanPaymentsMade 
+    };
   }, [transactions, loans]);
 
   const nextLoan = useMemo(() => {
@@ -99,10 +129,11 @@ export default function Dashboard() {
           </p>
         </Card>
 
-        <div className="mt-3 grid grid-cols-3 gap-2">
+        <div className="mt-3 grid grid-cols-4 gap-2">
           <KpiChip icon={TrendingDown} label="Today" value={stats.todaySpend} color="text-expense" />
           <KpiChip icon={Calendar} label="This Month" value={stats.monthSpend} color="text-expense" />
           <KpiChip icon={TrendingUp} label="Income" value={stats.totalIncome} color="text-income" />
+          <KpiChip icon={Landmark} label="Loans" value={stats.totalNewLoans} color="text-loan" />
         </div>
       </motion.div>
 

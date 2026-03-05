@@ -3,7 +3,7 @@ import { Modal } from '@/components/UI/Modal';
 import { Button } from '@/components/UI/Button';
 import { Input } from '@/components/UI/Input';
 import { useToast } from '@/lib/toast';
-import { updateLoan } from '@/lib/db';
+import { updateLoan, addTransaction } from '@/lib/db';
 import { generateId, formatCurrency } from '@/lib/utils';
 import { format } from 'date-fns';
 
@@ -36,12 +36,27 @@ export default function PaymentForm({ open, onOpenChange, loan, onSaved }) {
 
     setSaving(true);
     try {
+      // Update loan with new payment
       const payments = [...(loan.payments || []), {
         id: generateId(),
         amount: payAmount,
         date: new Date(date).toISOString(),
       }];
       await updateLoan(loan.id, { payments });
+
+      // Create expense transaction for the loan payment
+      const paymentTransaction = {
+        id: generateId(),
+        type: 'expense',
+        amount: payAmount,
+        categoryId: 'cat_other', // Use 'Other' category for loan payments
+        note: `Loan payment to ${loan.party}`,
+        date: new Date(date).toISOString(),
+        tags: ['loan-payment'],
+        recurrence: 'none',
+      };
+      await addTransaction(paymentTransaction);
+
       toast({ title: 'Payment recorded', description: formatCurrency(payAmount), variant: 'success' });
       onSaved?.();
       onOpenChange(false);

@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, isToday, isYesterday, parseISO } from 'date-fns';
 import { Pencil, Trash2, Search, Receipt, Repeat } from 'lucide-react';
-import { useTransactions, useCategories } from '@/lib/hooks';
+import { useTransactions, useCategories, useLoans } from '@/lib/hooks';
 import { useToast } from '@/lib/toast';
 import { deleteTransaction } from '@/lib/db';
 import { formatCurrency, cn } from '@/lib/utils';
@@ -35,6 +35,7 @@ function dayLabel(dateStr) {
 export default function TxListPage() {
   const { transactions, refresh } = useTransactions();
   const { categories } = useCategories();
+  const { loans } = useLoans();
   const { toast } = useToast();
   const [searchParams] = useSearchParams();
   const initialCat = searchParams.get('category') || '';
@@ -53,7 +54,41 @@ export default function TxListPage() {
 
   const filtered = useMemo(() => {
     let list = transactions;
-    if (filterType !== 'all') list = list.filter(t => t.type === filterType);
+    
+    // Add new loans as transactions
+    const loanTransactions = loans
+      .filter(loan => loan.loanType === 'new')
+      .map(loan => {
+        // Use the loan's actual creation time or current time if not available
+        const loanDateTime = loan.createdAt || loan.startDate || new Date().toISOString();
+        
+        return {
+          id: `loan_${loan.id}`,
+          type: 'income', // Treat borrowed loans as income
+          amount: loan.principal,
+          categoryId: 'cat_other',
+          note: `Loan received: ${loan.party}`,
+          date: loanDateTime,
+          tags: ['new-loan'],
+          recurrence: 'none',
+          isLoanTransaction: true, // Flag to identify loan transactions
+          loanId: loan.id
+        };
+      });
+    
+    // Combine regular transactions with loan transactions
+    list = [...list, ...loanTransactions];
+    
+    // Apply filters
+    if (filterType !== 'all') {
+      if (filterType === 'loan') {
+        // Show only loan transactions
+        list = list.filter(t => t.isLoanTransaction);
+      } else {
+        // Show regular transactions of the selected type
+        list = list.filter(t => !t.isLoanTransaction && t.type === filterType);
+      }
+    }
     if (filterCat) list = list.filter(t => t.categoryId === filterCat);
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -64,7 +99,7 @@ export default function TxListPage() {
       );
     }
     return list;
-  }, [transactions, filterType, filterCat, search, catMap]);
+  }, [transactions, loans, filterType, filterCat, search, catMap]);
 
   const groups = useMemo(() => groupByDay(filtered), [filtered]);
 
@@ -133,7 +168,10 @@ export default function TxListPage() {
 
         <AnimatePresence>
           {groups.map(([day, txs]) => {
+            // Calculate day total: income + borrowed loans - expenses
+            // Loans are now included as transactions, so no need for separate calculation
             const dayTotal = txs.reduce((s, t) => s + (t.type === 'income' ? t.amount : -t.amount), 0);
+            
             return (
               <motion.div key={day} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mb-4">
                 <div className="flex items-center justify-between mb-2">
@@ -145,15 +183,22 @@ export default function TxListPage() {
                 <div className="space-y-2">
                   {txs.map((tx) => {
                     const cat = catMap[tx.categoryId];
+                    const isLoanTx = tx.isLoanTransaction;
+                    
                     return (
-                      <motion.div key={tx.id} layout className="flex items-center gap-3 rounded-xl border border-border bg-surface p-3 group">
+                      <motion.div key={tx.id} layout className={cn(
+                        'flex items-center gap-3 rounded-xl border bg-surface p-3 group',
+                        isLoanTx ? 'border-loan/30 bg-loan/5' : 'border-border'
+                      )}>
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: (cat?.color || '#6366f1') + '20' }}>
                           <CategoryIcon name={cat?.icon} size={18} style={{ color: cat?.color || '#6366f1' }} />
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-medium truncate">{cat?.title || 'Other'}</span>
-                            <Badge variant={tx.type}>{tx.type}</Badge>
+                            <Badge variant={isLoanTx ? 'loan' : tx.type}>
+                              {isLoanTx ? 'Loan' : tx.type}
+                            </Badge>
                             {tx.recurrence && tx.recurrence !== 'none' && (
                               <Repeat size={10} className="text-text-muted" title={`Repeats ${tx.recurrence}`} />
                             )}
@@ -163,17 +208,17 @@ export default function TxListPage() {
                         <div className="text-right shrink-0">
                           <span className={cn(
                             'text-sm font-semibold',
-                            tx.type === 'income' ? 'text-income' : tx.type === 'expense' ? 'text-expense' : 'text-loan'
+                            isLoanTx ? 'text-loan' : tx.type === 'income' ? 'text-income' : tx.type === 'expense' ? 'text-expense' : 'text-loan'
                           )}>
                             {tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
                           </span>
                           <p className="text-[10px] text-text-muted">{format(parseISO(tx.date), 'h:mm a')}</p>
                         </div>
-                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button onClick={() => handleEdit(tx)} className="rounded-lg p-1.5 hover:bg-surface-hover text-text-muted hover:text-text cursor-pointer" aria-label={`Edit ${cat?.title || ''} transaction`}>
+                        <div className="flex gap-1">
+                          <button onClick={() => handleEdit(tx)} className="rounded-lg p-1.5 bg-surface-hover text-text cursor-pointer" aria-label={`Edit ${cat?.title || ''} transaction`}>
                             <Pencil size={14} />
                           </button>
-                          <button onClick={() => setDeleteTarget(tx.id)} className="rounded-lg p-1.5 hover:bg-danger/10 text-text-muted hover:text-danger cursor-pointer" aria-label={`Delete ${cat?.title || ''} transaction`}>
+                          <button onClick={() => setDeleteTarget(tx.id)} className="rounded-lg p-1.5 bg-danger/10 text-danger cursor-pointer" aria-label={`Delete ${cat?.title || ''} transaction`}>
                             <Trash2 size={14} />
                           </button>
                         </div>

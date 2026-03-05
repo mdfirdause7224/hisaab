@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, parseISO, addMonths } from 'date-fns';
-import { Plus, Pencil, Trash2, CreditCard, ChevronDown, ChevronUp, Landmark } from 'lucide-react';
+import { Plus, Pencil, Trash2, ChevronDown, ChevronUp, Landmark } from 'lucide-react';
 import { useLoans } from '@/lib/hooks';
 import { useToast } from '@/lib/toast';
 import { deleteLoan } from '@/lib/db';
@@ -12,33 +12,46 @@ import { Badge } from '@/components/UI/Badge';
 import { EmptyState } from '@/components/UI/EmptyState';
 import { ConfirmDialog } from '@/components/UI/ConfirmDialog';
 import LoanForm from './LoanForm';
-import PaymentForm from './PaymentForm';
 
 function AmortizationSchedule({ loan }) {
   const schedule = useMemo(() => {
-    const months = Math.min(Math.max(loan.termMonths || 12, 1), 360);
-    const rate = (loan.interestRate || 0) / 100 / 12;
-    const p = loan.principal;
-    const emi = rate > 0
-      ? (p * rate * Math.pow(1 + rate, months)) / (Math.pow(1 + rate, months) - 1)
-      : p / months;
+    const months = loan.termMonths || 12;
+    const principal = loan.principal;
+    const emi = loan.emiAmount || (principal / months); // Use user-set EMI or fallback
+    
+    // Calculate total repayment and interest
+    const totalRepayment = emi * months;
+    const totalInterest = totalRepayment - principal;
 
-    let balance = p;
+    // Start with total repayment amount (principal + interest)
+    let balance = totalRepayment;
     const rows = [];
     for (let i = 1; i <= months; i++) {
-      const interest = balance * rate;
-      const principalPart = emi - interest;
-      balance = Math.max(0, balance - principalPart);
-      rows.push({ month: i, date: format(addMonths(parseISO(loan.startDate), i), 'MMM yyyy'), emi, interest, principal: principalPart, balance });
+      // Reduce balance by EMI amount each month
+      const balanceReduction = Math.min(emi, balance);
+      balance = Math.max(0, balance - balanceReduction);
+      
+      rows.push({ 
+        month: i, 
+        date: format(addMonths(parseISO(loan.startDate), i), 'MMM yyyy'), 
+        emi, 
+        balanceReduction,
+        balance 
+      });
     }
-    return { emi, rows };
+    return { emi, totalRepayment, totalInterest, rows };
   }, [loan]);
 
   return (
     <div className="mt-3 max-h-48 overflow-y-auto">
       <div className="mb-2 rounded-lg bg-primary/10 px-3 py-1.5 text-xs text-primary font-medium">
-        EMI: {formatCurrency(schedule.emi)}/month
+        EMI: {formatCurrency(schedule.emi)}/month × {loan.termMonths || 12} months = {formatCurrency(schedule.totalRepayment)}
       </div>
+      {schedule.totalInterest > 0 && (
+        <div className="mb-2 rounded-lg bg-expense/10 px-3 py-1.5 text-xs text-expense font-medium">
+          Total Interest: {formatCurrency(schedule.totalInterest)}
+        </div>
+      )}
       <table className="w-full text-xs">
         <thead>
           <tr className="text-text-muted">
@@ -68,7 +81,6 @@ export default function LoanListPage() {
   const { toast } = useToast();
   const [formOpen, setFormOpen] = useState(false);
   const [editLoan, setEditLoan] = useState(null);
-  const [payLoan, setPayLoan] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [expanded, setExpanded] = useState(null);
 
@@ -101,8 +113,10 @@ export default function LoanListPage() {
       <AnimatePresence>
         {loans.map((loan) => {
           const totalPaid = (loan.payments || []).reduce((s, p) => s + p.amount, 0);
-          const remaining = loan.principal - totalPaid;
-          const progress = loan.principal > 0 ? (totalPaid / loan.principal) * 100 : 0;
+          const totalRepayment = (loan.emiAmount || 0) * (loan.termMonths || 1);
+          const totalInterest = totalRepayment - loan.principal;
+          const remaining = totalRepayment - totalPaid; // Remaining includes interest
+          const progress = totalRepayment > 0 ? (totalPaid / totalRepayment) * 100 : 0;
           const isExpanded = expanded === loan.id;
 
           return (
@@ -112,12 +126,12 @@ export default function LoanListPage() {
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
                       <span className="font-semibold text-sm">{loan.party}</span>
-                      <Badge variant={loan.direction === 'lent' ? 'income' : 'expense'}>
-                        {loan.direction === 'lent' ? 'Lent' : 'Borrowed'}
+                      <Badge variant={loan.loanType === 'new' ? 'income' : 'muted'}>
+                        {loan.loanType === 'new' ? 'New' : 'Old'}
                       </Badge>
                     </div>
                     <p className="text-xs text-text-muted">
-                      {formatCurrency(loan.principal)} · {loan.interestRate || 0}% · {loan.termMonths || 12} months
+                      {formatCurrency(loan.principal)} · {loan.reason || 'No reason'} · {loan.termMonths || 12} months
                     </p>
                   </div>
                   <div className="text-right">
@@ -145,7 +159,7 @@ export default function LoanListPage() {
 
                 <button
                   onClick={() => setExpanded(isExpanded ? null : loan.id)}
-                  className="mt-2 flex items-center gap-1 text-xs text-primary hover:underline cursor-pointer"
+                  className="mt-2 flex items-center gap-1 text-xs text-primary underline cursor-pointer"
                   aria-expanded={isExpanded}
                 >
                   {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
@@ -160,16 +174,13 @@ export default function LoanListPage() {
                   )}
                 </AnimatePresence>
 
-                <div className="mt-3 flex gap-2">
-                  <Button size="sm" variant="outline" onClick={() => setPayLoan(loan)}>
-                    <CreditCard size={14} /> Pay
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => { setEditLoan(loan); setFormOpen(true); }} aria-label="Edit loan">
+                <div className="flex gap-1">
+                  <button onClick={() => { setEditLoan(loan); setFormOpen(true); }} className="rounded-lg p-1.5 bg-surface-hover text-text cursor-pointer" aria-label={`Edit ${loan.party} loan`}>
                     <Pencil size={14} />
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setDeleteTarget(loan.id)} className="text-danger hover:text-danger" aria-label="Delete loan">
+                  </button>
+                  <button onClick={() => setDeleteTarget(loan.id)} className="rounded-lg p-1.5 bg-danger/10 text-danger cursor-pointer" aria-label={`Delete ${loan.party} loan`}>
                     <Trash2 size={14} />
-                  </Button>
+                  </button>
                 </div>
               </Card>
             </motion.div>
@@ -178,7 +189,6 @@ export default function LoanListPage() {
       </AnimatePresence>
 
       <LoanForm open={formOpen} onOpenChange={setFormOpen} editLoan={editLoan} onSaved={refresh} />
-      <PaymentForm open={!!payLoan} onOpenChange={() => setPayLoan(null)} loan={payLoan} onSaved={refresh} />
       <ConfirmDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)} title="Delete loan" description="This will permanently remove this loan and all payment records." onConfirm={handleDelete} />
     </div>
   );
